@@ -10,3 +10,6 @@ build: $(FILENAME).c
 
 run: build
 	./$(FILENAME) 1024 100
+
+zip: 
+	zip xblaze31 $(FILENAME).c Makefile
