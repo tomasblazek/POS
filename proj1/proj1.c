@@ -4,7 +4,7 @@
  * Author       - Tomáš Blažek (xblaze31)
  */
 
-
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <sys/types.h>
 #include <pthread.h>
@@ -23,15 +23,28 @@ pthread_mutex_t awaitMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t awaitCond = PTHREAD_COND_INITIALIZER;
 
 
-
+/**
+ * @brief      Structure holds command line arguments
+ */
 struct Arguments {
     unsigned int countOfThreads;
-    unsigned int criticalSectionPases;
+    unsigned int criticalSectionPasses;
 };
 
 struct Arguments args;
 
-//TODO number of threads 0 and passes 1+
+/**
+ * @brief      Function validate arguments and save them to global Argument structure.
+ *
+ * @param[in]  argc  The argc
+ * @param      argv  The argv
+ *
+ * @return     0 on success,
+ *             1 on invalid count of program arguments,
+ *             2 on invalid type of arguments,
+ *             3 on negative number arguments,
+ *             4 when count of threads is set on 0.
+ */
 int validateArgs(int argc, char *argv[]){
     // test arguments to count
     if(argc != 3){
@@ -62,14 +75,18 @@ int validateArgs(int argc, char *argv[]){
     }
 
     args.countOfThreads = (unsigned int) arg1;
-    args.criticalSectionPases = (unsigned int) arg2;
+    args.criticalSectionPasses = (unsigned int) arg2;
 
     //printf("Count of threads:\t%d\nCrit. section passes:\t%d\n----------------------------\n", arg1, arg2);
 
     return 0;
 }
 
-
+/**
+ * @brief      Function generates unique positive integer. Increments global variable ticketNumber.
+ *
+ * @return     Value of global variable ticketNumber incremented by 1
+ */
 int getticket(void){
     pthread_mutex_lock(&ticketMutex);
     int ticket = ticketNumber;
@@ -78,6 +95,11 @@ int getticket(void){
     return ticket;
 }
 
+/**
+ * @brief      Entrance to critical section by value of ticket number.
+ *
+ * @param[in]  aenter  Number of ticket
+ */
 void await(int aenter){
     pthread_mutex_lock(&awaitMutex);
     while(aenter != workingTicket){
@@ -85,6 +107,10 @@ void await(int aenter){
     }
     pthread_mutex_unlock(&awaitMutex);
 }
+
+/**
+ * @brief      Realase critical section for other thread with ticket higher by 1. 
+ */
 void advance(void){
     pthread_mutex_lock(&awaitMutex);
     workingTicket++;
@@ -93,25 +119,33 @@ void advance(void){
     pthread_mutex_unlock(&awaitMutex);
 }
 
-
+/**
+ * @brief      Implements work of thread. Simulates critical section passes. Used function nanosleep with interval <0s,0.5s>
+ *             before enter to critical section and after critical section.
+ *
+ * @param      arg   Thread Id
+ *
+ * @return     0 on success.
+ */
 void *threadWork(void *arg){
-    unsigned int threadId = (unsigned int) (uintptr_t) arg;
+    unsigned int threadId = *((unsigned int *) arg);
     unsigned int seed = (unsigned int) (time(NULL) ^ getpid() ^ pthread_self());
 
     unsigned int t;
-    while((t = (unsigned int) getticket()) < args.criticalSectionPases){
+    while((t = (unsigned int) getticket()) < args.criticalSectionPasses){
         //printf("PID(%d) has ticket %d and workingticket %d\n",  threadId, t, workingTicket);
         //random generator pseudo unique seed
-        const struct timespec sleepTime = {0, rand_r(&seed) % 500};
+        const struct timespec sleepTime = {0, rand_r(&seed) % (500 * 1000000)};
         // sleep between 0 to 500 nanosecs
         nanosleep(&sleepTime, NULL);
 
         await(t);
-        printf("Thread(%d) \thas ticket: \t%d\n", threadId, t);
-        fflush(stdout);
+        //printf("Thread(%d) \thas ticket: \t%d\n", threadId, t);
+        printf("%d\t(%d)\n", t, threadId);
+        fflush(stdout); // print and clear stdout buffer
         advance();
 
-        const struct timespec sleepTime2 = {0, rand_r(&seed) % 500};
+        const struct timespec sleepTime2 = {0, rand_r(&seed) % (500 * 1000000)};
         // sleep between 0 to 500 nanosecs
         nanosleep(&sleepTime2, NULL);
     }
@@ -119,28 +153,49 @@ void *threadWork(void *arg){
     return 0;
 }
 
+/**
+ * @brief      Print help to user.
+ */
+void printHelp(void){
+    printf("----------------------------------------------------\n");
+    printf("Ticket algorithm by Tomas Blazek\n\n");
+    printf("Usage:\n");
+    printf("  ./proj1 numberOfThreads critSectionPasses\n\n");
+    printf("  numberOfThreads   - Count of threads bigger than zero.\n");
+    printf("  critSectionPasses - Count of critical section passes. Should be positive integer number.\n");
+    printf("----------------------------------------------------\n");
+}
+
+
 int main(int argc,char *argv[]){
     if(validateArgs(argc,argv)){
-        fprintf(stderr, "Error: Invalid Arguments!\n");
+        fprintf(stderr, "Error: Invalid Arguments!\n\n");
+        printHelp();
         return 1;
     }
 
     // alloc memory for threads
-    pthread_t* pt;
-    pt = (pthread_t*) malloc(args.countOfThreads*sizeof(pthread_t));
-
+    pthread_t pt[args.countOfThreads];
+    int threadIds[args.countOfThreads];
 
     //generate threads
-    for(unsigned int i = 1; i < args.countOfThreads; i++){
-        pthread_create(&pt[i], NULL, threadWork, (void*) (uintptr_t) i);
+    for(unsigned int i = 1; i <= args.countOfThreads; i++){
+        threadIds[i] = i;
+        if(pthread_create(&pt[i], NULL, threadWork, &threadIds[i])){
+            fprintf(stderr, "Error: Error while creation of thread.\n");
+            return 1;
+        }
 
     }
 
     //waiting for other threads
-    for(unsigned int i = 1; i < args.countOfThreads; i++){
+    for(unsigned int i = 1; i <= args.countOfThreads; i++){
         pthread_join(pt[i], NULL);
     }
 
-    free(pt);
-	return 0;
+    //Free resources
+    pthread_mutex_destroy(&ticketMutex);
+    pthread_mutex_destroy(&awaitMutex);
+    pthread_cond_destroy(&awaitCond);
+    return 0;
 }
