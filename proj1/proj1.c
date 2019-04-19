@@ -6,12 +6,10 @@
 
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
-#include <sys/types.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-#include <zconf.h>
+#include <unistd.h>
 
 
 int ticketNumber = 0 ;
@@ -129,7 +127,7 @@ void advance(void){
  */
 void *threadWork(void *arg){
     unsigned int threadId = *((unsigned int *) arg);
-    unsigned int seed = (unsigned int) (time(NULL) ^ getpid() ^ pthread_self());
+    unsigned int seed = (unsigned int) (time(NULL) ^ getpid() ^ (long) pthread_self());
 
     unsigned int t;
     while((t = (unsigned int) getticket()) < args.criticalSectionPasses){
