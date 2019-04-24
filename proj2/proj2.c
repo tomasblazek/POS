@@ -14,25 +14,24 @@
 #include <wait.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <fcntl.h>
 
 
 pthread_mutex_t bufferMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t bufferCond = PTHREAD_COND_INITIALIZER;
-
-int get_arg();
 
 #define BUFFER_SIZE 513
 
 typedef struct {
     bool end;
     char buffer[BUFFER_SIZE];
+    pid_t running_process_pid;
 } pthread_data_t;
 
 typedef struct {
     bool background;
     int argc;
     char **argv;
-    int argvSize;
     char inputFile[BUFFER_SIZE];
     char outputFile[BUFFER_SIZE];
 } program_data_t;
@@ -95,7 +94,7 @@ int parseArgsFromBuffer(program_data_t *program_data, char* buffer){
     int i = 0;
     char *rest;
 
-    char **argv = malloc(sizeof(char *));
+    char **argv = malloc(sizeof(char **));
     if (argv == NULL){
         perror("malloc");
         return 1;
@@ -114,10 +113,11 @@ int parseArgsFromBuffer(program_data_t *program_data, char* buffer){
             free(argv);
             return 1;
         }
-        fflush(stdout);
         buffer = rest;
         i += 1;
     }
+    argv[i] = NULL;
+
     program_data->argc = i;
     program_data->argv = argv;
 
@@ -170,6 +170,45 @@ void freeResources(program_data_t *data){
     free((* data).argv);
 }
 
+void execute(program_data_t *program_data){
+    int inputFile, outputFile;
+    if (strlen(program_data->inputFile) > 0){
+        inputFile = open(program_data->inputFile, O_RDONLY);
+        if(inputFile < 0) {
+            perror("open input");
+            exit(2);
+        }
+
+        if(dup2(inputFile, 0) < 0){
+            perror("dup2");
+            exit(3);
+        }
+    }
+
+    if (strlen(program_data->outputFile) > 0){
+        outputFile = open(program_data->outputFile, O_WRONLY | O_TRUNC | O_CREAT, 0666);
+        if(outputFile < 0) {
+            perror("open input");
+            exit(2);
+        }
+
+        if(dup2(outputFile, 1) < 0){
+            perror("dup2");
+            exit(3);
+        }
+    }
+
+    execvp((*program_data).argv[0], (*program_data).argv);
+    perror("execvp");
+
+    if (strlen(program_data->inputFile) > 0) {
+        close(inputFile);
+    }
+
+    if (strlen(program_data->outputFile) > 0) {
+        close(outputFile);
+    }
+}
 
 
 void *threadRun(void *arg){
@@ -182,59 +221,60 @@ void *threadRun(void *arg){
         bufferWait();
 
         strcpy(buffer, pthread_data->buffer);
-        printf("Buffer: %s", buffer);
 
         // init program_data pthread_data structure
         program_data.background = false;
         memset(program_data.inputFile, 0, sizeof(program_data.inputFile));
         memset(program_data.outputFile, 0, sizeof(program_data.outputFile));
 
+        // search for run on background & char
+        char *ampersand = strchr(buffer, '&');
+        if (ampersand != NULL){
+            program_data.background = true;
+            ampersand[0] = '\0';
+        }
+
         // load input file and clear it from buffer
         char *inputFile = findRedirect(buffer, '<');
         strncpy(program_data.inputFile, inputFile, lengthOfArgument(inputFile));
         memset(inputFile, ' ', lengthOfArgument(inputFile));
-
-        printf("INPUT: %s\n", program_data.inputFile);
 
         // load output file and clear it from buffer
         char *outputFile = findRedirect(buffer, '>');
         strncpy(program_data.outputFile, outputFile, lengthOfArgument(outputFile));
         memset(outputFile, ' ', lengthOfArgument(outputFile));
 
-        printf("OUTPUT: %s\n", program_data.outputFile);
-
+        // load program arguments
         if(parseArgsFromBuffer(&program_data, buffer)){
             pthread_data->end = true;
             break;
         }
 
-        printf("Argc: %d\n", program_data.argc);
-        for(int i = 0; i < program_data.argc; i++){
-            printf("Argv(%d): %s\n", i, program_data.argv[i]);
-        }
-        fflush(stdout);
 
-        // Exit on exit command
-        if(!strcmp(program_data.argv[0], "exit")){
-            pthread_data->end = true;
-            bufferSignal();
-            break;
-        }
-
-        int pid = fork();
-        if(pid==-1) {
-            perror("fork failure");
-            continue;
-        } else if(pid > 0){
-            //parent
-            if (!program_data.background){
-                waitpid(pid, NULL, 0);
+        if(program_data.argc > 0) {
+            // Exit on exit command
+            if(!strcmp(program_data.argv[0], "exit")){
+                pthread_data->end = true;
+                bufferSignal();
+                break;
             }
-        } else {
-            //child
-            execvp(program_data.argv[0], program_data.argv);
-            perror("execvp");
-            exit(1);
+
+            int pid = fork();
+            if (pid == -1) {
+                perror("fork failure");
+                continue;
+            } else if (pid > 0) {
+                //parent
+                if (!program_data.background) {
+                    pthread_data->running_process_pid = pid;
+                    waitpid(pid, NULL, 0);
+                    pthread_data->running_process_pid = 0;
+                }
+            } else {
+                //child
+                execute(&program_data);
+                exit(1);
+            }
         }
 
         freeResources(&program_data);
@@ -290,14 +330,7 @@ void *threadRead(void *arg){
 }
 
 
-int main(int argc, char *argv[]) {
-    printf("Hello, World!\n");
-
-    printf("Argc: %d\n", argc);
-    for(int i = 0; i < argc; i++){
-        printf("Argv(%d): %s\n", i, argv[i]);
-    }
-
+int main() {
     pthread_t pthread_read;
     pthread_t pthread_run;
 
