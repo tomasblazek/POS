@@ -1,6 +1,9 @@
-proj1
-proj2
-
+.idea
+cmake-build-debug
+proj1/proj1
+proj2/proj2
+CMakeLists.txt
+*.zip
 
 
 # Prerequisites
