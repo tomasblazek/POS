@@ -297,7 +297,9 @@ void *threadRun(void *arg){
 
         // init programData data structure
         programData.background = false;
+        pthread_mutex_lock(&pidMutex);
         data->runningProcessPid = 0;
+        pthread_mutex_unlock(&pidMutex);
         memset(programData.inputFile, 0, sizeof(programData.inputFile));
         memset(programData.outputFile, 0, sizeof(programData.outputFile));
 
@@ -339,7 +341,9 @@ void *threadRun(void *arg){
             } else if (pid > 0) {
                 //parent
                 if (!programData.background) {
+                    pthread_mutex_lock(&pidMutex);
                     data->runningProcessPid = pid;
+                    pthread_mutex_unlock(&pidMutex);
                     waitpid(pid, NULL, 0);
                 }
             } else {
