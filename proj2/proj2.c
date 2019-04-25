@@ -449,7 +449,7 @@ void sigChildHandler(int sig){
 void sigIntHandler(int sig){
     pthread_mutex_lock(&pidMutex);
     if (global_data.runningProcessPid > 0){
-        kill(global_data.runningProcessPid, SIGINT);
+        kill(global_data.runningProcessPid, sig);
     }
     pthread_mutex_unlock(&pidMutex);
 }
