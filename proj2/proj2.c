@@ -17,16 +17,20 @@
 #include <fcntl.h>
 
 
+pthread_mutex_t pidMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t bufferMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t bufferCond = PTHREAD_COND_INITIALIZER;
 
 #define BUFFER_SIZE 513
 
+
 typedef struct {
     bool end;
     char buffer[BUFFER_SIZE];
-    pid_t running_process_pid;
-} pthread_data_t;
+    pid_t runningProcessPid;
+} global_data_t;
+
+global_data_t global_data;
 
 typedef struct {
     bool background;
@@ -36,21 +40,30 @@ typedef struct {
     char outputFile[BUFFER_SIZE];
 } program_data_t;
 
-
+/**
+ * @brief Wait on condition till signal is received, then continue to buffer monitor.
+ */
 void bufferWait(){
     pthread_mutex_lock(&bufferMutex);
     pthread_cond_wait(&bufferCond, &bufferMutex);
     pthread_mutex_unlock(&bufferMutex);
 }
 
-
+/**
+ * @brief Send condition signal to unlock buffer monitor.
+ */
 void bufferSignal(){
     pthread_mutex_lock(&bufferMutex);
     pthread_cond_signal(&bufferCond);
     pthread_mutex_unlock(&bufferMutex);
 }
 
-
+/**
+ * @brief Jump on the first nonspace character.
+ *
+ * @param buffer Buffer ended with '\0' symbol
+ * @return Pointer on non space character
+ */
 char* skipWhiteSpaces(char *buffer){
     int i = 0;
     while(isspace(buffer[i]) && buffer[i] != '\0'){
@@ -60,18 +73,23 @@ char* skipWhiteSpaces(char *buffer){
     return &buffer[i];
 }
 
-
-// in buffer will be arg and rest is returned
+/**
+ * @brief Get argument from buffer.
+ *
+ * @param buffer Buffer ended with '\0' symbol
+ * @param rest Pointer on first char after argument end
+ * @return Argument
+ */
 char* getArg(char *buffer, char** rest) {
     int i = 0;
-    bool in_quotation = false;
+    bool inQuotation = false;
 
-    while(buffer[i] != '\0' && (!isspace(buffer[i]) || in_quotation)){
+    while(buffer[i] != '\0' && (!isspace(buffer[i]) || inQuotation)){
         if(buffer[i] == '\"'){
-            if(in_quotation){
-                in_quotation = false;
+            if(inQuotation){
+                inQuotation = false;
             } else{
-                in_quotation = true;
+                inQuotation = true;
             }
         }
         i++;
@@ -90,11 +108,20 @@ char* getArg(char *buffer, char** rest) {
 }
 
 
-int parseArgsFromBuffer(program_data_t *program_data, char* buffer){
+/**
+ * @brief Parse buffer and fill program data structure with arguments (set argv and argc).
+ *
+ * @param programData Program data struture
+ * @param buffer Buffer ended with '\0' symbol
+ * @return Zero on success
+ */
+int parseArgsFromBuffer(program_data_t *programData, char* buffer){
+    const int ALLOC_INCREMENT = 10;
     int i = 0;
+    int allocSize = ALLOC_INCREMENT;
     char *rest;
 
-    char **argv = malloc(sizeof(char **));
+    char **argv = malloc(sizeof(char *) * allocSize);
     if (argv == NULL){
         perror("malloc");
         return 1;
@@ -105,7 +132,25 @@ int parseArgsFromBuffer(program_data_t *program_data, char* buffer){
         if(!strcmp(buffer, "")){
             break;
         }
+
+        // realloc for
+        if (i + 1 >= allocSize) { // +1 because of last NULL arg
+            allocSize += ALLOC_INCREMENT; // increment of alloc size
+            void *new = realloc(argv, sizeof(char *) * allocSize);
+            if (new == NULL) {
+                perror("realloc");
+                for (int j = 0; j < i; j++) {
+                    free(argv[j]);
+                }
+                free(argv);
+                return 1;
+            }
+            argv = new;
+        }
+
+        // assign new argument
         argv[i] = getArg(buffer, &rest);
+        // free args on fail
         if(argv[i] == NULL){
             for(int j = 0; j < i; j++){
                 free(argv[j]);
@@ -113,18 +158,24 @@ int parseArgsFromBuffer(program_data_t *program_data, char* buffer){
             free(argv);
             return 1;
         }
+
         buffer = rest;
         i += 1;
     }
     argv[i] = NULL;
 
-    program_data->argc = i;
-    program_data->argv = argv;
+    programData->argc = i;
+    programData->argv = argv;
 
     return 0;
 }
 
-// on first white character
+/**
+ * @brief Get length of argument terminated with white space or '\0' symbol
+ *
+ * @param s Buffer ended with '\0' symbol
+ * @return  Size of argument
+ */
 size_t lengthOfArgument(const char *s){
     size_t i = 0;
 
@@ -139,7 +190,13 @@ size_t lengthOfArgument(const char *s){
     return i;
 }
 
-
+/**
+ * @brief Find redirection tags and filenames in buffer and replace it with spaces (last filename is not replaced)
+ *
+ * @param buffer Buffer ended with '\0' symbol
+ * @param c Search character
+ * @return Pointer to filename after last redirect symbol
+ */
 char* findRedirect(char *buffer, char c) {
     int i = 0;
     char *fileName = NULL;
@@ -162,7 +219,11 @@ char* findRedirect(char *buffer, char c) {
     return fileName;
 }
 
-
+/**
+ * @brief Free allocated resources
+ *
+ * @param data Program data structure
+ */
 void freeResources(program_data_t *data){
     for(int i = 0; i < (* data).argc; i++){
         free((* data).argv[i]);
@@ -170,12 +231,17 @@ void freeResources(program_data_t *data){
     free((* data).argv);
 }
 
-void execute(program_data_t *program_data){
+/**
+ * @brief Execute command from shell input
+ *
+ * @param programData Program data structure
+ */
+void execute(program_data_t *programData){
     int inputFile, outputFile;
-    if (strlen(program_data->inputFile) > 0){
-        inputFile = open(program_data->inputFile, O_RDONLY);
+    if (strlen(programData->inputFile) > 0){
+        inputFile = open(programData->inputFile, O_RDONLY);
         if(inputFile < 0) {
-            perror("open input");
+            perror("open");
             exit(2);
         }
 
@@ -185,10 +251,10 @@ void execute(program_data_t *program_data){
         }
     }
 
-    if (strlen(program_data->outputFile) > 0){
-        outputFile = open(program_data->outputFile, O_WRONLY | O_TRUNC | O_CREAT, 0666);
+    if (strlen(programData->outputFile) > 0){
+        outputFile = open(programData->outputFile, O_WRONLY | O_TRUNC | O_CREAT, 0666);
         if(outputFile < 0) {
-            perror("open input");
+            perror("open");
             exit(2);
         }
 
@@ -198,63 +264,70 @@ void execute(program_data_t *program_data){
         }
     }
 
-    execvp((*program_data).argv[0], (*program_data).argv);
+    execvp((*programData).argv[0], (*programData).argv);
     perror("execvp");
 
-    if (strlen(program_data->inputFile) > 0) {
+    if (strlen(programData->inputFile) > 0) {
         close(inputFile);
     }
 
-    if (strlen(program_data->outputFile) > 0) {
+    if (strlen(programData->outputFile) > 0) {
         close(outputFile);
     }
+
+    exit(1);
 }
 
-
+/**
+ * @brief Thread what is executing commands in shell.
+ *
+ * @param arg Global data
+ * @return Zero
+ */
 void *threadRun(void *arg){
-    pthread_data_t *pthread_data = (pthread_data_t *) arg;
+    global_data_t *data = (global_data_t *) arg;
 
     char buffer[BUFFER_SIZE];
-    program_data_t program_data;
+    program_data_t programData;
 
-    while(!pthread_data->end) {
+    while(!data->end) {
         bufferWait();
 
-        strcpy(buffer, pthread_data->buffer);
+        strcpy(buffer, data->buffer);
 
-        // init program_data pthread_data structure
-        program_data.background = false;
-        memset(program_data.inputFile, 0, sizeof(program_data.inputFile));
-        memset(program_data.outputFile, 0, sizeof(program_data.outputFile));
+        // init programData data structure
+        programData.background = false;
+        data->runningProcessPid = 0;
+        memset(programData.inputFile, 0, sizeof(programData.inputFile));
+        memset(programData.outputFile, 0, sizeof(programData.outputFile));
 
         // search for run on background & char
         char *ampersand = strchr(buffer, '&');
         if (ampersand != NULL){
-            program_data.background = true;
+            programData.background = true;
             ampersand[0] = '\0';
         }
 
         // load input file and clear it from buffer
         char *inputFile = findRedirect(buffer, '<');
-        strncpy(program_data.inputFile, inputFile, lengthOfArgument(inputFile));
+        strncpy(programData.inputFile, inputFile, lengthOfArgument(inputFile));
         memset(inputFile, ' ', lengthOfArgument(inputFile));
 
         // load output file and clear it from buffer
         char *outputFile = findRedirect(buffer, '>');
-        strncpy(program_data.outputFile, outputFile, lengthOfArgument(outputFile));
+        strncpy(programData.outputFile, outputFile, lengthOfArgument(outputFile));
         memset(outputFile, ' ', lengthOfArgument(outputFile));
 
         // load program arguments
-        if(parseArgsFromBuffer(&program_data, buffer)){
-            pthread_data->end = true;
+        if(parseArgsFromBuffer(&programData, buffer)){
+            data->end = true;
             break;
         }
 
-
-        if(program_data.argc > 0) {
+        if(programData.argc > 0) {
             // Exit on exit command
-            if(!strcmp(program_data.argv[0], "exit")){
-                pthread_data->end = true;
+            if(!strcmp(programData.argv[0], "exit")){
+                data->end = true;
                 bufferSignal();
                 break;
             }
@@ -265,30 +338,33 @@ void *threadRun(void *arg){
                 continue;
             } else if (pid > 0) {
                 //parent
-                if (!program_data.background) {
-                    pthread_data->running_process_pid = pid;
+                if (!programData.background) {
+                    data->runningProcessPid = pid;
                     waitpid(pid, NULL, 0);
-                    pthread_data->running_process_pid = 0;
                 }
             } else {
                 //child
-                execute(&program_data);
-                exit(1);
+                execute(&programData);
             }
         }
 
-        freeResources(&program_data);
+        freeResources(&programData);
 
         bufferSignal();
     }
 
-    freeResources(&program_data);
+    freeResources(&programData);
     return 0;
 }
 
-
+/**
+ * @brief Thread what is reading input in shell.
+ *
+ * @param arg Global data
+ * @return Zero
+ */
 void *threadRead(void *arg){
-    pthread_data_t *data = (pthread_data_t *) arg;
+    global_data_t *data = (global_data_t *) arg;
 
     ssize_t ret;
     while(!data->end){
@@ -329,26 +405,92 @@ void *threadRead(void *arg){
     return 0;
 }
 
+/**
+ * @brief Signal handler for SICHILD.
+ *
+ * @param sig Signal number
+ */
+void sigChildHandler(int sig){
+    (void) sig; // avoid warning
+    int returnCode;
+    pid_t pid = wait(&returnCode);
+    if(pid < 0){
+        return;
+    }
+    pthread_mutex_lock(&pidMutex);
+    if (pid == global_data.runningProcessPid){ // running process is not child
+        pthread_mutex_unlock(&pidMutex);
+        return;
+    }
+    pthread_mutex_unlock(&pidMutex);
+
+    if(WIFEXITED(returnCode)){
+        fprintf(stderr, "\nProcess [%d] finished with return code: %d\n", pid, WEXITSTATUS(returnCode));
+    }
+    else if(WIFSTOPPED(returnCode)) {
+        fprintf(stderr, "\nProcess [%d] stopped with signal: %d\n", pid, WSTOPSIG(returnCode));
+    }
+    else if(WIFSIGNALED(returnCode)){
+        fprintf(stderr, "\nProcess [%d] terminated with signal: %d\n", pid, WTERMSIG(returnCode));
+    }
+    else {
+        fprintf(stderr, "\nProcess [%d] is no longer running\n", pid);
+    }
+    fflush(stderr);
+    printf("$ ");
+    fflush(stdout);
+}
+
+/**
+ * @brief Signal handler for SIGINT.
+ *
+ * @param sig Signal number
+ */
+void sigIntHandler(int sig){
+    pthread_mutex_lock(&pidMutex);
+    if (global_data.runningProcessPid > 0){
+        kill(global_data.runningProcessPid, SIGINT);
+    }
+    pthread_mutex_unlock(&pidMutex);
+}
+
 
 int main() {
     pthread_t pthread_read;
     pthread_t pthread_run;
 
-    pthread_data_t data;
-    data.end = false;
+    global_data.end = false;
+    global_data.runningProcessPid = 0;
 
-    if(pthread_create(&pthread_read, NULL, threadRead, (void *) &data)){
+    struct sigaction sigactionSigInt;
+    sigactionSigInt.sa_flags = 0;
+    sigactionSigInt.sa_handler = sigIntHandler;
+    sigemptyset(&sigactionSigInt.sa_mask);
+    sigaction(SIGINT, &sigactionSigInt, NULL);
+
+    struct sigaction sigactionSigChild;
+    sigactionSigChild.sa_flags = 0;
+    sigactionSigChild.sa_handler = sigChildHandler;
+    sigemptyset(&sigactionSigChild.sa_mask);
+    sigaction(SIGCHLD, &sigactionSigChild, NULL);
+
+    if(pthread_create(&pthread_read, NULL, threadRead, (void *) &global_data)){
         fprintf(stderr, "Error: Error while creation of Read thread.\n");
         return 1;
     }
 
-    if(pthread_create(&pthread_run, NULL, threadRun, (void *) &data)){
+    if(pthread_create(&pthread_run, NULL, threadRun, (void *) &global_data)){
         fprintf(stderr, "Error: Error while creation of Run thread.\n");
         return 1;
     }
 
     pthread_join(pthread_read, NULL);
     pthread_join(pthread_run, NULL);
+
+    //Free resources
+    pthread_mutex_destroy(&pidMutex);
+    pthread_mutex_destroy(&bufferMutex);
+    pthread_cond_destroy(&bufferCond);
 
     return 0;
 }
