@@ -10,12 +10,13 @@
 #include <stdbool.h>
 #include <zconf.h>
 #include <memory.h>
-#include <malloc.h>
-#include <wait.h>
+#include <stdlib.h>
+#include <sys/wait.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <fcntl.h>
-
+#include <signal.h>
+#include <unistd.h>
 
 pthread_mutex_t pidMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t bufferMutex = PTHREAD_MUTEX_INITIALIZER;
@@ -498,3 +499,4 @@ int main() {
 
     return 0;
 }
+
